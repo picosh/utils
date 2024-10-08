@@ -159,3 +159,21 @@ func StartOfYear() time.Time {
 	now := time.Now()
 	return now.AddDate(-1, 0, 0)
 }
+
+func AnyToStr(mp map[string]any, key string) string {
+	if value, ok := mp[key]; ok {
+		if value, ok := value.(string); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+func AnyToFloat(mp map[string]any, key string) float64 {
+	if value, ok := mp[key]; ok {
+		if value, ok := value.(float64); ok {
+			return value
+		}
+	}
+	return 0
+}
