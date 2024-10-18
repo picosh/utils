@@ -21,7 +21,7 @@ func NewMaxBytesReader(r io.Reader, limit int64) *MaxBytesReader {
 
 func (b *MaxBytesReader) Read(p []byte) (n int, err error) {
 	if b.N <= 0 {
-		err := fmt.Errorf("%w: %.2fmb", ErrSizeExceeded, BytesToMB(int(b.Limit)))
+		err := fmt.Errorf("%w: %.4fmb", ErrSizeExceeded, BytesToMB(int(b.Limit)))
 		return 0, err
 	}
 
