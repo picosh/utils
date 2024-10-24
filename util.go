@@ -140,12 +140,35 @@ func Shasum(data []byte) string {
 	return hex.EncodeToString(bs)
 }
 
+func BytesToKB(size int) float32 {
+	return float32(size) / 1000
+}
+
 func BytesToMB(size int) float32 {
-	return ((float32(size) / 1000) / 1000)
+	return BytesToKB(size) / 1000
 }
 
 func BytesToGB(size int) float32 {
 	return BytesToMB(size) / 1000
+}
+
+func BytesToTB(size int) float32 {
+	return BytesToGB(size) / 1000
+}
+
+func HumanizeBytes(size int) string {
+	switch {
+	case size < 1_000:
+		return fmt.Sprintf("%dB", size)
+	case size < 1_000_000:
+		return fmt.Sprintf("%.1fKB", BytesToKB(size))
+	case size < 1_000_000_000:
+		return fmt.Sprintf("%.1fMB", BytesToMB(size))
+	case size < 1_000_000_000_000:
+		return fmt.Sprintf("%.1fGB", BytesToGB(size))
+	default:
+		return fmt.Sprintf("%.1fTB", BytesToTB(size))
+	}
 }
 
 // https://stackoverflow.com/a/46964105
