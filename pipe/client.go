@@ -1,3 +1,7 @@
+// Package pipe provides a simple way to create a bi-directional pipes
+// over SSH. It uses the golang.org/x/crypto/ssh package to create a
+// secure connection to the remote host and provides reconnect logic to all
+// sessions in case of a connection drop.
 package pipe
 
 import (
@@ -17,21 +21,38 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// Client represents a connection to a remote host.
 type Client struct {
-	Logger    *slog.Logger
-	Info      *SSHClientInfo
-	SSHClient *ssh.Client
-	Sessions  *syncmap.Map[string, *Session]
+	// Logger is the logger used by the client.
+	Logger *slog.Logger
 
-	Done          chan struct{}
-	connectMu     sync.Mutex
-	closeDoneOnce sync.Once
+	// Info is the connection information.
+	Info *SSHClientInfo
+
+	// SSHClient is the underlying SSH client.
+	SSHClient *ssh.Client
+
+	// Sessions is a map of all sessions.
+	Sessions *syncmap.Map[string, *Session]
+
+	// connectMu is a mutex to protect the connection.
+	connectMu sync.Mutex
+
+	// ctx is the context of the client. If the context is canceled, the client will close
+	// all sessions and the SSH connection. No reconnect will be attempted.
+	Context context.Context
 }
 
-func NewClient(logger *slog.Logger, info *SSHClientInfo) (*Client, error) {
+// NewClient creates a new pipe client.
+func NewClient(ctx context.Context, logger *slog.Logger, info *SSHClientInfo) (*Client, error) {
+	if ctx == nil {
+		ctx = context.TODO()
+	}
+
 	c := &Client{
-		Logger: logger,
-		Info:   info,
+		Logger:  logger,
+		Info:    info,
+		Context: ctx,
 	}
 
 	err := c.Open()
@@ -42,15 +63,13 @@ func NewClient(logger *slog.Logger, info *SSHClientInfo) (*Client, error) {
 	return c, nil
 }
 
+// Open opens the SSH connection.
 func (c *Client) Open() error {
 	c.Close()
 	c.Logger.Info("opening ssh conn", "info", c.Info)
 
 	c.connectMu.Lock()
 	defer c.connectMu.Unlock()
-
-	c.closeDoneOnce = sync.Once{}
-	c.Done = make(chan struct{})
 
 	if c.Sessions == nil {
 		c.Sessions = syncmap.New[string, *Session]()
@@ -63,26 +82,25 @@ func (c *Client) Open() error {
 
 	c.SSHClient = sshClient
 
+	var errs []error
 	c.Sessions.Range(func(key string, value *Session) bool {
-		value.Open()
+		err := value.Open()
+		if err != nil {
+			c.Logger.Error("failed to open session", "id", key, "error", err)
+		}
+		errs = append(errs, err)
 		return true
 	})
 
-	return nil
+	return errors.Join(errs...)
 }
 
+// Close closes the SSH connection.
 func (c *Client) Close() error {
 	c.Logger.Info("closing ssh conn", "info", c.Info)
 
 	c.connectMu.Lock()
 	defer c.connectMu.Unlock()
-
-	if c.Done != nil {
-		c.closeDoneOnce.Do(func() {
-			close(c.Done)
-			c.Done = nil
-		})
-	}
 
 	var errs []error
 
@@ -100,7 +118,11 @@ func (c *Client) Close() error {
 	return errors.Join(errs...)
 }
 
-func (c *Client) AddSession(id string, cmd string, buffer int, timeout time.Duration) (*Session, error) {
+// AddSession represents a bi-directional pipe over SSH.
+// It creates a new session with the given id, command, buffer size and timeout.
+// The buffer size is the size of the channel buffer for the input and output channels.
+// Session implemnts the io.ReadWriteCloser interface and is resilient to network issues.
+func (c *Client) AddSession(id string, command string, buffer int, timeout time.Duration) (*Session, error) {
 	if c.SSHClient == nil {
 		return nil, fmt.Errorf("ssh client is not connected")
 	}
@@ -114,13 +136,14 @@ func (c *Client) AddSession(id string, cmd string, buffer int, timeout time.Dura
 	}
 
 	session := &Session{
+		Logger:     c.Logger.With("id", id, "command", command),
 		Client:     c,
-		Cmd:        cmd,
+		Command:    command,
 		BufferSize: buffer,
 		Timeout:    timeout,
 		Done:       make(chan struct{}),
-		In:         make(chan []byte, buffer),
-		Out:        make(chan []byte, buffer),
+		In:         make(chan SendData, buffer),
+		Out:        make(chan SendData, buffer),
 	}
 
 	err := session.Open()
@@ -133,6 +156,7 @@ func (c *Client) AddSession(id string, cmd string, buffer int, timeout time.Dura
 	return s, nil
 }
 
+// RemoveSession removes a session by id.
 func (c *Client) RemoveSession(id string) error {
 	if c.SSHClient == nil {
 		return fmt.Errorf("ssh client is not connected")
@@ -148,6 +172,7 @@ func (c *Client) RemoveSession(id string) error {
 	return err
 }
 
+// SSHClientInfo represents the SSH connection information.
 type SSHClientInfo struct {
 	RemoteHost     string
 	RemoteHostname string
@@ -156,6 +181,7 @@ type SSHClientInfo struct {
 	KeyPassphrase  string
 }
 
+// NewSSHClient creates a new SSH client.
 func NewSSHClient(info *SSHClientInfo) (*ssh.Client, error) {
 	if info == nil {
 		return nil, fmt.Errorf("conn info is invalid")
@@ -214,8 +240,9 @@ func NewSSHClient(info *SSHClientInfo) (*ssh.Client, error) {
 	return sshClient, nil
 }
 
-func Base(id string, cmd string, ctx context.Context, info *SSHClientInfo) (io.ReadWriteCloser, error) {
-	client, err := NewClient(slog.Default(), info)
+// Base is the base command for a simple bidirectional pipe.
+func Base(ctx context.Context, logger *slog.Logger, info *SSHClientInfo, id, cmd string) (io.ReadWriteCloser, error) {
+	client, err := NewClient(ctx, logger.With("info", info), info)
 	if err != nil {
 		return nil, err
 	}
@@ -234,10 +261,12 @@ func Base(id string, cmd string, ctx context.Context, info *SSHClientInfo) (io.R
 	return session, nil
 }
 
-func Sub(cmd string, ctx context.Context, info *SSHClientInfo) (io.Reader, error) {
-	return Base("sub", cmd, ctx, info)
+// Sub creates a new session with the given command..
+func Sub(ctx context.Context, logger *slog.Logger, info *SSHClientInfo, cmd string) (io.Reader, error) {
+	return Base(ctx, logger, info, "sub", cmd)
 }
 
-func Pub(cmd string, ctx context.Context, info *SSHClientInfo) (io.WriteCloser, error) {
-	return Base("pub", cmd, ctx, info)
+// Pub creates a new session with the given command.
+func Pub(ctx context.Context, logger *slog.Logger, info *SSHClientInfo, cmd string) (io.WriteCloser, error) {
+	return Base(ctx, logger, info, "pub", cmd)
 }

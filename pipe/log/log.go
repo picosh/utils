@@ -9,12 +9,13 @@ import (
 	"github.com/picosh/utils/pipe"
 )
 
+// RegisterLogger registers a logger that forwards log records to a remote log drain.
 func RegisterLogger(logger *slog.Logger, info *pipe.SSHClientInfo, buffer int, timeout time.Duration) (*slog.Logger, error) {
 	if buffer < 0 {
 		buffer = 0
 	}
 
-	logWriter, err := pipe.NewClient(logger, info)
+	logWriter, err := pipe.NewClient(context.Background(), logger, info)
 	if err != nil {
 		return nil, err
 	}
@@ -38,6 +39,7 @@ func RegisterLogger(logger *slog.Logger, info *pipe.SSHClientInfo, buffer int, t
 	), nil
 }
 
-func ReadLogs(ctx context.Context, connectionInfo *pipe.SSHClientInfo) (io.Reader, error) {
-	return pipe.Sub("sub log-drain -k", ctx, connectionInfo)
+// ReadLogs reads logs from a remote log drain.
+func ReadLogs(ctx context.Context, logger *slog.Logger, connectionInfo *pipe.SSHClientInfo) (io.Reader, error) {
+	return pipe.Sub(ctx, logger, connectionInfo, "sub log-drain -k")
 }

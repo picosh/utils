@@ -8,11 +8,13 @@ import (
 	"sync"
 )
 
+// MultiHandler is a handler that forwards log records to multiple handlers.
 type MultiHandler struct {
 	Handlers []slog.Handler
 	mu       sync.Mutex
 }
 
+// Enabled returns true if at least one of the handlers is enabled for the given level.
 func (m *MultiHandler) Enabled(ctx context.Context, l slog.Level) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -26,6 +28,7 @@ func (m *MultiHandler) Enabled(ctx context.Context, l slog.Level) bool {
 	return false
 }
 
+// Handle forwards the log record to all handlers.
 func (m *MultiHandler) Handle(ctx context.Context, r slog.Record) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -40,6 +43,7 @@ func (m *MultiHandler) Handle(ctx context.Context, r slog.Record) error {
 	return errors.Join(errs...)
 }
 
+// WithAttrs returns a new MultiHandler with the given attributes added to each handler.
 func (m *MultiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -55,6 +59,7 @@ func (m *MultiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
+// WithGroup returns a new MultiHandler with the given group name added to each handler.
 func (m *MultiHandler) WithGroup(name string) slog.Handler {
 	if name == "" {
 		return m

@@ -3,6 +3,7 @@ package pipe
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"slices"
 	"sync"
 	"time"
@@ -10,17 +11,24 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// Session represents a session to a remote command.
 type Session struct {
-	Client     *Client
-	Cmd        string
+	Logger *slog.Logger
+	Client *Client
+
+	Done chan struct{}
+	In   chan SendData
+	Out  chan SendData
+
+	Timeout time.Duration
+
+	ID         string
+	Command    string
+	BufferSize int
+
 	Session    *ssh.Session
 	StdinPipe  io.WriteCloser
 	StdoutPipe io.Reader
-	Done       chan struct{}
-	In         chan []byte
-	Out        chan []byte
-	Timeout    time.Duration
-	BufferSize int
 
 	startOnce     sync.Once
 	cleanDoneOnce sync.Once
@@ -30,11 +38,18 @@ type Session struct {
 	reconnectMu sync.Mutex
 }
 
+type SendData struct {
+	Data  []byte
+	Error error
+	N     int
+}
+
 var _ io.ReadWriteCloser = (*Session)(nil)
 
+// Open opens a new session.
 func (s *Session) Open() error {
 	s.Close()
-	s.Client.Logger.Info("opening ssh session", "sessionCmd", s.Cmd)
+	s.Logger.Info("opening ssh session")
 
 	s.connectMu.Lock()
 	defer s.connectMu.Unlock()
@@ -62,7 +77,7 @@ func (s *Session) Open() error {
 		return err
 	}
 
-	err = session.Start(s.Cmd)
+	err = session.Start(s.Command)
 	if err != nil {
 		return err
 	}
@@ -79,8 +94,9 @@ func (s *Session) Open() error {
 	return nil
 }
 
+// Close closes the session.
 func (s *Session) Close() error {
-	s.Client.Logger.Info("closing session", "sessionCmd", s.Cmd)
+	s.Logger.Info("closing session")
 	s.connectMu.Lock()
 	defer s.connectMu.Unlock()
 
@@ -91,7 +107,7 @@ func (s *Session) Close() error {
 	}
 
 	s.cleanDoneOnce.Do(func() {
-		broadcastDone(s.Done, s.Timeout)
+		s.broadcastDone()
 
 		for len(s.Done) > 0 {
 			<-s.Done
@@ -101,6 +117,7 @@ func (s *Session) Close() error {
 	return err
 }
 
+// Reconnect reconnects the session.
 func (s *Session) Reconnect() {
 	s.reconnectMu.Lock()
 	defer s.reconnectMu.Unlock()
@@ -108,45 +125,51 @@ func (s *Session) Reconnect() {
 	s.reconnectOnce.Do(func() {
 		go func() {
 			s.reconnectMu.Lock()
-			defer s.reconnectMu.Unlock()
+			defer func() {
+				s.reconnectOnce = sync.Once{}
+				s.reconnectMu.Unlock()
+			}()
 
+		loop:
 			for {
-				err := s.Open()
-				if err != nil {
-					if s.Client != nil {
-						err = s.Client.Open()
+				select {
+				case <-s.Client.Context.Done():
+					return
+				default:
+					err := s.Open()
+					if err != nil {
+						if s.Client != nil {
+							err = s.Client.Open()
+						}
 					}
-				}
 
-				if err == nil {
-					break
-				}
+					if err == nil {
+						break loop
+					}
 
-				time.Sleep(5 * time.Second)
+					time.Sleep(5 * time.Second)
+				}
 			}
-
-			s.reconnectOnce = sync.Once{}
 		}()
 	})
 }
 
+// Start starts the session handling.
 func (s *Session) Start() {
 	s.startOnce.Do(func() {
 		go func() {
 			for {
 				select {
 				case <-s.Done:
-					select {
-					case s.Done <- struct{}{}:
-						break
-					case <-time.After(s.Timeout):
-						break
-					}
+					s.broadcastDone()
+					return
+				case <-s.Client.Context.Done():
+					s.broadcastDone()
 					return
 				case data, ok := <-s.In:
-					_, err := s.StdinPipe.Write(data)
-					if !ok || err != nil {
-						s.Client.Logger.Error("received error on write, reopening conn", "error", err)
+					_, err := s.StdinPipe.Write(data.Data)
+					if !ok || err != nil || data.Error != nil {
+						s.Logger.Error("received error on write, reopening conn", "error", err)
 						s.Reconnect()
 						return
 					}
@@ -158,25 +181,39 @@ func (s *Session) Start() {
 			for {
 				select {
 				case <-s.Done:
-
+					s.broadcastDone()
+					return
+				case <-s.Client.Context.Done():
+					s.broadcastDone()
 					return
 				default:
 					data := make([]byte, 32*1024)
 
 					n, err := s.StdoutPipe.Read(data)
-					if err != nil {
-						s.Client.Logger.Error("received error on read, reopening conn", "error", err)
-						s.Reconnect()
+
+					select {
+					case s.Out <- SendData{Data: slices.Clone(data[:n]), N: n, Error: err}:
+						break
+					case <-s.Done:
+						s.broadcastDone()
+						return
+					case <-s.Client.Context.Done():
+						s.broadcastDone()
 						return
 					}
 
-					s.Out <- data[:n]
+					if err != nil {
+						s.Logger.Error("received error on read, reopening conn", "error", err)
+						s.Reconnect()
+						return
+					}
 				}
 			}
 		}()
 	})
 }
 
+// Write writes data to the session.
 func (s *Session) Write(data []byte) (int, error) {
 	var (
 		n   int
@@ -184,18 +221,20 @@ func (s *Session) Write(data []byte) (int, error) {
 	)
 
 	select {
-	case s.In <- slices.Clone(data):
+	case s.In <- SendData{Data: slices.Clone(data), N: len(data)}:
 		n = len(data)
-	case <-time.After(s.Timeout):
-		err = fmt.Errorf("unable to send data within timeout")
 	case <-s.Done:
-		broadcastDone(s.Done, s.Timeout)
+		s.broadcastDone()
+		break
+	case <-s.Client.Context.Done():
+		s.broadcastDone()
 		break
 	}
 
 	return n, err
 }
 
+// Read reads data from the session.
 func (s *Session) Read(data []byte) (int, error) {
 	var (
 		n   int
@@ -204,22 +243,26 @@ func (s *Session) Read(data []byte) (int, error) {
 
 	select {
 	case d := <-s.Out:
-		n = copy(data, d)
-	case <-time.After(s.Timeout):
-		err = fmt.Errorf("unable to read data within timeout")
+		n = copy(data, d.Data)
+		err = d.Error
 	case <-s.Done:
-		broadcastDone(s.Done, s.Timeout)
+		s.broadcastDone()
+		break
+	case <-s.Client.Context.Done():
+		s.broadcastDone()
 		break
 	}
 
 	return n, err
 }
 
-func broadcastDone(done chan struct{}, timeout time.Duration) {
+func (s *Session) broadcastDone() {
 	select {
-	case done <- struct{}{}:
+	case s.Done <- struct{}{}:
 		break
-	case <-time.After(timeout):
+	case <-time.After(s.Timeout):
+		break
+	case <-s.Client.Context.Done():
 		break
 	}
 }
