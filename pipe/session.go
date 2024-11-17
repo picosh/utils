@@ -20,7 +20,8 @@ type Session struct {
 	In   chan SendData
 	Out  chan SendData
 
-	Timeout time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
 
 	ID         string
 	Command    string
@@ -133,7 +134,7 @@ func (s *Session) Reconnect() {
 		loop:
 			for {
 				select {
-				case <-s.Client.Context.Done():
+				case <-s.Client.CtxDone:
 					return
 				default:
 					err := s.Open()
@@ -163,7 +164,7 @@ func (s *Session) Start() {
 				case <-s.Done:
 					s.broadcastDone()
 					return
-				case <-s.Client.Context.Done():
+				case <-s.Client.CtxDone:
 					s.broadcastDone()
 					return
 				case data, ok := <-s.In:
@@ -183,7 +184,7 @@ func (s *Session) Start() {
 				case <-s.Done:
 					s.broadcastDone()
 					return
-				case <-s.Client.Context.Done():
+				case <-s.Client.CtxDone:
 					s.broadcastDone()
 					return
 				default:
@@ -197,7 +198,7 @@ func (s *Session) Start() {
 					case <-s.Done:
 						s.broadcastDone()
 						return
-					case <-s.Client.Context.Done():
+					case <-s.Client.CtxDone:
 						s.broadcastDone()
 						return
 					}
@@ -226,8 +227,10 @@ func (s *Session) Write(data []byte) (int, error) {
 	case <-s.Done:
 		s.broadcastDone()
 		break
-	case <-s.Client.Context.Done():
+	case <-s.Client.CtxDone:
 		s.broadcastDone()
+		break
+	case <-s.writeTimeout():
 		break
 	}
 
@@ -248,21 +251,41 @@ func (s *Session) Read(data []byte) (int, error) {
 	case <-s.Done:
 		s.broadcastDone()
 		break
-	case <-s.Client.Context.Done():
+	case <-s.Client.CtxDone:
 		s.broadcastDone()
+		break
+	case <-s.readTimeout():
 		break
 	}
 
 	return n, err
 }
 
+func (s *Session) readTimeout() <-chan time.Time {
+	if s.ReadTimeout < 0 {
+		return s.Client.CtxDone
+	}
+
+	return time.After(s.ReadTimeout)
+}
+
+func (s *Session) writeTimeout() <-chan time.Time {
+	if s.WriteTimeout < 0 {
+		return s.Client.CtxDone
+	}
+
+	return time.After(s.WriteTimeout)
+}
+
 func (s *Session) broadcastDone() {
 	select {
 	case s.Done <- struct{}{}:
 		break
-	case <-time.After(s.Timeout):
+	case <-s.readTimeout():
 		break
-	case <-s.Client.Context.Done():
+	case <-s.writeTimeout():
+		break
+	case <-s.Client.CtxDone:
 		break
 	}
 }

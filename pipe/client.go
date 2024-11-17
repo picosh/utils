@@ -41,6 +41,9 @@ type Client struct {
 	// ctx is the context of the client. If the context is canceled, the client will close
 	// all sessions and the SSH connection. No reconnect will be attempted.
 	Context context.Context
+
+	// CtxDone is a channel that will send a time.Time when the main context is canceled.
+	CtxDone chan time.Time
 }
 
 // NewClient creates a new pipe client.
@@ -53,7 +56,13 @@ func NewClient(ctx context.Context, logger *slog.Logger, info *SSHClientInfo) (*
 		Logger:  logger,
 		Info:    info,
 		Context: ctx,
+		CtxDone: make(chan time.Time),
 	}
+
+	go func() {
+		<-ctx.Done()
+		c.CtxDone <- time.Now()
+	}()
 
 	err := c.Open()
 	if err != nil {
@@ -122,7 +131,7 @@ func (c *Client) Close() error {
 // It creates a new session with the given id, command, buffer size and timeout.
 // The buffer size is the size of the channel buffer for the input and output channels.
 // Session implemnts the io.ReadWriteCloser interface and is resilient to network issues.
-func (c *Client) AddSession(id string, command string, buffer int, timeout time.Duration) (*Session, error) {
+func (c *Client) AddSession(id string, command string, buffer int, readTimeout, writeTimeout time.Duration) (*Session, error) {
 	if c.SSHClient == nil {
 		return nil, fmt.Errorf("ssh client is not connected")
 	}
@@ -131,19 +140,16 @@ func (c *Client) AddSession(id string, command string, buffer int, timeout time.
 		buffer = 0
 	}
 
-	if timeout < 0 {
-		timeout = 10 * time.Millisecond
-	}
-
 	session := &Session{
-		Logger:     c.Logger.With("id", id, "command", command),
-		Client:     c,
-		Command:    command,
-		BufferSize: buffer,
-		Timeout:    timeout,
-		Done:       make(chan struct{}),
-		In:         make(chan SendData, buffer),
-		Out:        make(chan SendData, buffer),
+		Logger:       c.Logger.With("id", id, "command", command),
+		Client:       c,
+		Command:      command,
+		BufferSize:   buffer,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
+		Done:         make(chan struct{}),
+		In:           make(chan SendData, buffer),
+		Out:          make(chan SendData, buffer),
 	}
 
 	err := session.Open()
@@ -247,7 +253,7 @@ func Base(ctx context.Context, logger *slog.Logger, info *SSHClientInfo, id, cmd
 		return nil, err
 	}
 
-	session, err := client.AddSession(id, cmd, 0, 0)
+	session, err := client.AddSession(id, cmd, 0, 0, 0)
 	if err != nil {
 		return nil, err
 	}

@@ -31,7 +31,7 @@ func (r *ReconnectLogger) Write(p []byte) (n int, err error) {
 	}
 
 	if r.Session == nil {
-		s, err := r.Client.AddSession("rootLogger", "pub log-drain -b=false", r.Buffer, r.Timeout)
+		s, err := r.Client.AddSession("rootLogger", "pub log-drain -b=false", r.Buffer, r.Timeout, r.Timeout)
 		if err != nil {
 			return 0, err
 		}
@@ -72,7 +72,7 @@ func RegisterLogger(logger *slog.Logger, info *pipe.SSHClientInfo, buffer int, t
 		return nil, err
 	}
 
-	s, err := logWriter.AddSession("rootLogger", "pub log-drain -b=false", buffer, timeout)
+	s, err := logWriter.AddSession("rootLogger", "pub log-drain -b=false", buffer, timeout, timeout)
 	if err != nil {
 		return nil, err
 	}
