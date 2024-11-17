@@ -193,7 +193,7 @@ func (s *Session) Start() {
 					n, err := s.StdoutPipe.Read(data)
 
 					select {
-					case s.Out <- SendData{Data: slices.Clone(data[:n]), N: n, Error: err}:
+					case s.Out <- SendData{Data: data[:n], N: n, Error: err}:
 						break
 					case <-s.Done:
 						s.broadcastDone()
@@ -286,6 +286,8 @@ func (s *Session) broadcastDone() {
 	case <-s.writeTimeout():
 		break
 	case <-s.Client.CtxDone:
+		break
+	default:
 		break
 	}
 }

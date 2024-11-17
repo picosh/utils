@@ -253,7 +253,7 @@ func Base(ctx context.Context, logger *slog.Logger, info *SSHClientInfo, id, cmd
 		return nil, err
 	}
 
-	session, err := client.AddSession(id, cmd, 0, 0, 0)
+	session, err := client.AddSession(id, cmd, 100, -1, -1)
 	if err != nil {
 		return nil, err
 	}
