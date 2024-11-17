@@ -9,12 +9,64 @@ import (
 	"github.com/picosh/utils/pipe"
 )
 
-// RegisterLogger registers a logger that forwards log records to a remote log drain.
-func RegisterLogger(logger *slog.Logger, info *pipe.SSHClientInfo, buffer int, timeout time.Duration) (*slog.Logger, error) {
-	if buffer < 0 {
-		buffer = 0
+// ReconnectLogger is a logger that forwards log records to a remote log drain and reconnects even if the initial connection fails.
+type ReconnectLogger struct {
+	Logger        *slog.Logger
+	SSHClientInfo *pipe.SSHClientInfo
+	Buffer        int
+	Timeout       time.Duration
+
+	Client  *pipe.Client
+	Session *pipe.Session
+}
+
+func (r *ReconnectLogger) Write(p []byte) (n int, err error) {
+	if r.Client == nil {
+		logWriter, err := pipe.NewClient(context.Background(), r.Logger, r.SSHClientInfo)
+		if err != nil {
+			return 0, err
+		}
+
+		r.Client = logWriter
 	}
 
+	if r.Session == nil {
+		s, err := r.Client.AddSession("rootLogger", "pub log-drain -b=false", r.Buffer, r.Timeout)
+		if err != nil {
+			return 0, err
+		}
+
+		r.Session = s
+	}
+
+	return r.Session.Write(p)
+}
+
+var _ io.Writer = (*ReconnectLogger)(nil)
+
+// RegisterReconnectLogger registers a logger that forwards log records to a remote log drain and reconnects even if the initial connection fails.
+func RegisterReconnectLogger(logger *slog.Logger, info *pipe.SSHClientInfo, buffer int, timeout time.Duration) (*slog.Logger, error) {
+	currentHandler := logger.Handler()
+	return slog.New(
+		&MultiHandler{
+			Handlers: []slog.Handler{
+				currentHandler,
+				slog.NewJSONHandler(&ReconnectLogger{
+					Logger:        logger,
+					SSHClientInfo: info,
+					Buffer:        buffer,
+					Timeout:       timeout,
+				}, &slog.HandlerOptions{
+					AddSource: true,
+					Level:     slog.LevelDebug,
+				}),
+			},
+		},
+	), nil
+}
+
+// RegisterLogger registers a logger that forwards log records to a remote log drain.
+func RegisterLogger(logger *slog.Logger, info *pipe.SSHClientInfo, buffer int, timeout time.Duration) (*slog.Logger, error) {
 	logWriter, err := pipe.NewClient(context.Background(), logger, info)
 	if err != nil {
 		return nil, err
