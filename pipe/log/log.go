@@ -2,8 +2,10 @@ package log
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/picosh/utils/pipe"
@@ -16,15 +18,20 @@ type ReconnectLogger struct {
 	Buffer        int
 	Timeout       time.Duration
 
+	setupMu sync.Mutex
+
 	Client  *pipe.Client
 	Session *pipe.Session
 }
 
-func (r *ReconnectLogger) Write(p []byte) (n int, err error) {
+func (r *ReconnectLogger) Setup() error {
+	r.setupMu.Lock()
+	defer r.setupMu.Unlock()
+
 	if r.Client == nil {
 		logWriter, err := pipe.NewClient(context.Background(), r.Logger, r.SSHClientInfo)
 		if err != nil {
-			return 0, err
+			return err
 		}
 
 		r.Client = logWriter
@@ -33,10 +40,25 @@ func (r *ReconnectLogger) Write(p []byte) (n int, err error) {
 	if r.Session == nil {
 		s, err := r.Client.AddSession("rootLogger", "pub log-drain -b=false", r.Buffer, r.Timeout, r.Timeout)
 		if err != nil {
-			return 0, err
+			return err
 		}
 
 		r.Session = s
+	}
+
+	return nil
+}
+
+func (r *ReconnectLogger) Write(p []byte) (n int, err error) {
+	ok := r.setupMu.TryLock()
+	if !ok {
+		return 0, fmt.Errorf("could not acquire lock")
+	}
+
+	defer r.setupMu.Unlock()
+
+	if r.Session == nil {
+		return 0, fmt.Errorf("session is not viable, waiting for reconnect")
 	}
 
 	return r.Session.Write(p)
@@ -46,17 +68,32 @@ var _ io.Writer = (*ReconnectLogger)(nil)
 
 // RegisterReconnectLogger registers a logger that forwards log records to a remote log drain and reconnects even if the initial connection fails.
 func RegisterReconnectLogger(logger *slog.Logger, info *pipe.SSHClientInfo, buffer int, timeout time.Duration) (*slog.Logger, error) {
+	reconnectLogger := &ReconnectLogger{
+		Logger:        logger,
+		SSHClientInfo: info,
+		Buffer:        buffer,
+		Timeout:       timeout,
+	}
+
+	go func() {
+		for {
+			err := reconnectLogger.Setup()
+			if err != nil {
+				logger.Error("could not setup reconnect logger", "error", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
+			break
+		}
+	}()
+
 	currentHandler := logger.Handler()
 	return slog.New(
 		&MultiHandler{
 			Handlers: []slog.Handler{
 				currentHandler,
-				slog.NewJSONHandler(&ReconnectLogger{
-					Logger:        logger,
-					SSHClientInfo: info,
-					Buffer:        buffer,
-					Timeout:       timeout,
-				}, &slog.HandlerOptions{
+				slog.NewJSONHandler(reconnectLogger, &slog.HandlerOptions{
 					AddSource: true,
 					Level:     slog.LevelDebug,
 				}),
