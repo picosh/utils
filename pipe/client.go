@@ -61,7 +61,7 @@ func NewClient(ctx context.Context, logger *slog.Logger, info *SSHClientInfo) (*
 
 	go func() {
 		<-ctx.Done()
-		c.CtxDone <- time.Now()
+		close(c.CtxDone)
 	}()
 
 	err := c.Open()
