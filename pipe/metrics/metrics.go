@@ -38,7 +38,7 @@ func ReconnectReadMetrics(ctx context.Context, logger *slog.Logger, connectionIn
 		logger,
 		connectionInfo,
 		ID,
-		PubCommand,
+		SubCommand,
 		buffer,
 		timeout,
 	)
