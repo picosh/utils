@@ -140,7 +140,10 @@ func (c *Client) AddSession(id string, command string, buffer int, readTimeout, 
 		buffer = 0
 	}
 
+	ctx, cancelFunc := context.WithCancel(c.Context)
+
 	session := &Session{
+		Context:      ctx,
 		Logger:       c.Logger.With("id", id, "command", command),
 		Client:       c,
 		Command:      command,
@@ -150,6 +153,7 @@ func (c *Client) AddSession(id string, command string, buffer int, readTimeout, 
 		Done:         make(chan struct{}),
 		In:           make(chan SendData, buffer),
 		Out:          make(chan SendData, buffer),
+		cancelFunc:   cancelFunc,
 	}
 
 	err := session.Open()
@@ -172,6 +176,7 @@ func (c *Client) RemoveSession(id string) error {
 
 	if session, ok := c.Sessions.Load(id); ok {
 		err = session.Close()
+		session.Cancel()
 		c.Sessions.Delete(id)
 	}
 

@@ -1,6 +1,7 @@
 package pipe
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,8 +14,9 @@ import (
 
 // Session represents a session to a remote command.
 type Session struct {
-	Logger *slog.Logger
-	Client *Client
+	Context context.Context
+	Logger  *slog.Logger
+	Client  *Client
 
 	Done chan struct{}
 	In   chan SendData
@@ -37,6 +39,8 @@ type Session struct {
 
 	connectMu   sync.Mutex
 	reconnectMu sync.Mutex
+
+	cancelFunc context.CancelFunc
 }
 
 type SendData struct {
@@ -136,6 +140,8 @@ func (s *Session) Reconnect() {
 				select {
 				case <-s.Client.CtxDone:
 					return
+				case <-s.Context.Done():
+					return
 				default:
 					err := s.Open()
 					if err != nil {
@@ -167,6 +173,9 @@ func (s *Session) Start() {
 				case <-s.Client.CtxDone:
 					s.broadcastDone()
 					return
+				case <-s.Context.Done():
+					s.broadcastDone()
+					return
 				case data, ok := <-s.In:
 					_, err := s.StdinPipe.Write(data.Data)
 					if !ok || err != nil || data.Error != nil {
@@ -187,6 +196,9 @@ func (s *Session) Start() {
 				case <-s.Client.CtxDone:
 					s.broadcastDone()
 					return
+				case <-s.Context.Done():
+					s.broadcastDone()
+					return
 				default:
 					data := make([]byte, 32*1024)
 
@@ -199,6 +211,9 @@ func (s *Session) Start() {
 						s.broadcastDone()
 						return
 					case <-s.Client.CtxDone:
+						s.broadcastDone()
+						return
+					case <-s.Context.Done():
 						s.broadcastDone()
 						return
 					}
@@ -230,6 +245,9 @@ func (s *Session) Write(data []byte) (int, error) {
 	case <-s.Client.CtxDone:
 		s.broadcastDone()
 		break
+	case <-s.Context.Done():
+		s.broadcastDone()
+		break
 	case <-s.writeTimeout():
 		break
 	}
@@ -254,11 +272,19 @@ func (s *Session) Read(data []byte) (int, error) {
 	case <-s.Client.CtxDone:
 		s.broadcastDone()
 		break
+	case <-s.Context.Done():
+		s.broadcastDone()
+		break
 	case <-s.readTimeout():
 		break
 	}
 
 	return n, err
+}
+
+// Cancel cancels the session.
+func (s *Session) Cancel() {
+	s.cancelFunc()
 }
 
 func (s *Session) readTimeout() <-chan time.Time {
@@ -286,6 +312,8 @@ func (s *Session) broadcastDone() {
 	case <-s.writeTimeout():
 		break
 	case <-s.Client.CtxDone:
+		break
+	case <-s.Context.Done():
 		break
 	default:
 		break
