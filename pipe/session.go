@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 // Session represents a session to a remote command.
 type Session struct {
 	Context context.Context
+	CtxDone chan time.Time
 	Logger  *slog.Logger
 	Client  *Client
 
@@ -138,9 +140,7 @@ func (s *Session) Reconnect() {
 		loop:
 			for {
 				select {
-				case <-s.Client.CtxDone:
-					return
-				case <-s.Context.Done():
+				case <-s.CtxDone:
 					return
 				default:
 					err := s.Open()
@@ -170,10 +170,7 @@ func (s *Session) Start() {
 				case <-s.Done:
 					s.broadcastDone()
 					return
-				case <-s.Client.CtxDone:
-					s.broadcastDone()
-					return
-				case <-s.Context.Done():
+				case <-s.CtxDone:
 					s.broadcastDone()
 					return
 				case data, ok := <-s.In:
@@ -193,10 +190,7 @@ func (s *Session) Start() {
 				case <-s.Done:
 					s.broadcastDone()
 					return
-				case <-s.Client.CtxDone:
-					s.broadcastDone()
-					return
-				case <-s.Context.Done():
+				case <-s.CtxDone:
 					s.broadcastDone()
 					return
 				default:
@@ -210,10 +204,7 @@ func (s *Session) Start() {
 					case <-s.Done:
 						s.broadcastDone()
 						return
-					case <-s.Client.CtxDone:
-						s.broadcastDone()
-						return
-					case <-s.Context.Done():
+					case <-s.CtxDone:
 						s.broadcastDone()
 						return
 					}
@@ -241,15 +232,12 @@ func (s *Session) Write(data []byte) (int, error) {
 		n = len(data)
 	case <-s.Done:
 		s.broadcastDone()
-		break
-	case <-s.Client.CtxDone:
+		err = io.EOF
+	case <-s.CtxDone:
 		s.broadcastDone()
-		break
-	case <-s.Context.Done():
-		s.broadcastDone()
-		break
+		err = io.EOF
 	case <-s.writeTimeout():
-		break
+		err = os.ErrDeadlineExceeded
 	}
 
 	return n, err
@@ -268,15 +256,12 @@ func (s *Session) Read(data []byte) (int, error) {
 		err = d.Error
 	case <-s.Done:
 		s.broadcastDone()
-		break
-	case <-s.Client.CtxDone:
+		err = io.EOF
+	case <-s.CtxDone:
 		s.broadcastDone()
-		break
-	case <-s.Context.Done():
-		s.broadcastDone()
-		break
+		err = io.EOF
 	case <-s.readTimeout():
-		break
+		err = os.ErrDeadlineExceeded
 	}
 
 	return n, err
@@ -289,7 +274,7 @@ func (s *Session) Cancel() {
 
 func (s *Session) readTimeout() <-chan time.Time {
 	if s.ReadTimeout < 0 {
-		return s.Client.CtxDone
+		return s.CtxDone
 	}
 
 	return time.After(s.ReadTimeout)
@@ -297,7 +282,7 @@ func (s *Session) readTimeout() <-chan time.Time {
 
 func (s *Session) writeTimeout() <-chan time.Time {
 	if s.WriteTimeout < 0 {
-		return s.Client.CtxDone
+		return s.CtxDone
 	}
 
 	return time.After(s.WriteTimeout)
@@ -306,16 +291,9 @@ func (s *Session) writeTimeout() <-chan time.Time {
 func (s *Session) broadcastDone() {
 	select {
 	case s.Done <- struct{}{}:
-		break
 	case <-s.readTimeout():
-		break
 	case <-s.writeTimeout():
-		break
-	case <-s.Client.CtxDone:
-		break
-	case <-s.Context.Done():
-		break
+	case <-s.CtxDone:
 	default:
-		break
 	}
 }

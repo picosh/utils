@@ -41,9 +41,6 @@ type Client struct {
 	// ctx is the context of the client. If the context is canceled, the client will close
 	// all sessions and the SSH connection. No reconnect will be attempted.
 	Context context.Context
-
-	// CtxDone is a channel that will send a time.Time when the main context is canceled.
-	CtxDone chan time.Time
 }
 
 // NewClient creates a new pipe client.
@@ -56,13 +53,7 @@ func NewClient(ctx context.Context, logger *slog.Logger, info *SSHClientInfo) (*
 		Logger:  logger,
 		Info:    info,
 		Context: ctx,
-		CtxDone: make(chan time.Time),
 	}
-
-	go func() {
-		<-ctx.Done()
-		close(c.CtxDone)
-	}()
 
 	err := c.Open()
 	if err != nil {
@@ -144,6 +135,7 @@ func (c *Client) AddSession(id string, command string, buffer int, readTimeout, 
 
 	session := &Session{
 		Context:      ctx,
+		CtxDone:      make(chan time.Time),
 		Logger:       c.Logger.With("id", id, "command", command),
 		Client:       c,
 		Command:      command,
@@ -155,6 +147,11 @@ func (c *Client) AddSession(id string, command string, buffer int, readTimeout, 
 		Out:          make(chan SendData, buffer),
 		cancelFunc:   cancelFunc,
 	}
+
+	go func() {
+		<-ctx.Done()
+		close(session.CtxDone)
+	}()
 
 	err := session.Open()
 	if err != nil {
@@ -175,8 +172,8 @@ func (c *Client) RemoveSession(id string) error {
 	var err error
 
 	if session, ok := c.Sessions.Load(id); ok {
-		err = session.Close()
 		session.Cancel()
+		err = session.Close()
 		c.Sessions.Delete(id)
 	}
 
