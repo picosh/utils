@@ -177,3 +177,12 @@ func AnyToFloat(mp map[string]any, key string) float64 {
 	}
 	return 0
 }
+
+func AnyToBool(mp map[string]any, key string) bool {
+	if value, ok := mp[key]; ok {
+		if value, ok := value.(bool); ok {
+			return value
+		}
+	}
+	return false
+}
