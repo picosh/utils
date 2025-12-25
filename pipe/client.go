@@ -182,12 +182,12 @@ func (c *Client) RemoveSession(id string) error {
 
 // SSHClientInfo represents the SSH connection information.
 type SSHClientInfo struct {
-	RemoteHost      string
-	RemoteHostname  string
-	RemoteUser      string
-	KeyLocation     string
-	KeyPassphrase   string
-	CertificateFile string
+	RemoteHost          string
+	RemoteHostname      string
+	RemoteUser          string
+	KeyLocation         string
+	KeyPassphrase       string
+	CertificateLocation string
 }
 
 // NewSSHClient creates a new SSH client.
@@ -228,8 +228,8 @@ func NewSSHClient(info *SSHClientInfo) (*ssh.Client, error) {
 			return nil, err
 		}
 
-		if info.CertificateFile != "" {
-			certPath, err := filepath.Abs(info.CertificateFile)
+		if info.CertificateLocation != "" {
+			certPath, err := filepath.Abs(info.CertificateLocation)
 			if err != nil {
 				return nil, err
 			}
