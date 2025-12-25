@@ -182,11 +182,12 @@ func (c *Client) RemoveSession(id string) error {
 
 // SSHClientInfo represents the SSH connection information.
 type SSHClientInfo struct {
-	RemoteHost     string
-	RemoteHostname string
-	RemoteUser     string
-	KeyLocation    string
-	KeyPassphrase  string
+	RemoteHost      string
+	RemoteHostname  string
+	RemoteUser      string
+	KeyLocation     string
+	KeyPassphrase   string
+	CertificateFile string
 }
 
 // NewSSHClient creates a new SSH client.
@@ -225,6 +226,33 @@ func NewSSHClient(info *SSHClientInfo) (*ssh.Client, error) {
 
 		if err != nil {
 			return nil, err
+		}
+
+		if info.CertificateFile != "" {
+			certPath, err := filepath.Abs(info.CertificateFile)
+			if err != nil {
+				return nil, err
+			}
+
+			certData, err := os.ReadFile(certPath)
+			if err != nil {
+				return nil, err
+			}
+
+			pubKey, _, _, _, err := ssh.ParseAuthorizedKey(certData)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse certificate: %w", err)
+			}
+
+			cert, ok := pubKey.(*ssh.Certificate)
+			if !ok {
+				return nil, fmt.Errorf("file is not an SSH certificate")
+			}
+
+			signer, err = ssh.NewCertSigner(cert, signer)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create cert signer: %w", err)
+			}
 		}
 	}
 
