@@ -55,7 +55,7 @@ var _ io.ReadWriteCloser = (*Session)(nil)
 
 // Open opens a new session.
 func (s *Session) Open() error {
-	s.Close()
+	_ = s.Close()
 	s.Logger.Info("opening ssh session")
 
 	s.connectMu.Lock()

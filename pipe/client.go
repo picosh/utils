@@ -65,7 +65,7 @@ func NewClient(ctx context.Context, logger *slog.Logger, info *SSHClientInfo) (*
 
 // Open opens the SSH connection.
 func (c *Client) Open() error {
-	c.Close()
+	_ = c.Close()
 	c.Logger.Info("opening ssh conn", "info", c.Info)
 
 	c.connectMu.Lock()
@@ -290,8 +290,8 @@ func Base(ctx context.Context, logger *slog.Logger, info *SSHClientInfo, id, cmd
 
 	go func() {
 		<-ctx.Done()
-		session.Close()
-		client.Close()
+		_ = session.Close()
+		_ = client.Close()
 	}()
 
 	return session, nil
